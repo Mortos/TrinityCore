@@ -36,6 +36,13 @@ public:
 
     ChatCommand* GetCommands() const override
     {
+        static ChatCommand seasonCommandTable[] =
+        {
+            { "start",          rbac::RBAC_PERM_COMMAND_ARENA_SEASON_START,  true, &HandleArenaSeasonStartCommand,  "", NULL },
+            { "end",            rbac::RBAC_PERM_COMMAND_ARENA_SEASON_END, true, &HandleArenaSeasonEndCommand, "", NULL },
+            { "reset",          rbac::RBAC_PERM_COMMAND_ARENA_SEASON_RESET,  true, &HandleArenaSeasonResetCommand,  "", NULL },
+            { NULL, 0, false, NULL, "", NULL }
+        };
         static ChatCommand arenaCommandTable[] =
         {
             { "create",         rbac::RBAC_PERM_COMMAND_ARENA_CREATE,   true, &HandleArenaCreateCommand,   "", NULL },
@@ -44,6 +51,7 @@ public:
             { "captain",        rbac::RBAC_PERM_COMMAND_ARENA_CAPTAIN, false, &HandleArenaCaptainCommand,  "", NULL },
             { "info",           rbac::RBAC_PERM_COMMAND_ARENA_INFO,     true, &HandleArenaInfoCommand,     "", NULL },
             { "lookup",         rbac::RBAC_PERM_COMMAND_ARENA_LOOKUP,  false, &HandleArenaLookupCommand,   "", NULL },
+            { "season",         rbac::RBAC_PERM_COMMAND_ARENA_SEASON,   true, NULL,                        "", seasonCommandTable },
             { NULL, 0, false, NULL, "", NULL }
         };
         static ChatCommand commandTable[] =
@@ -351,6 +359,97 @@ public:
         if (!found)
             handler->PSendSysMessage(LANG_AREAN_ERROR_NAME_NOT_FOUND, namepart.c_str());
 
+        return true;
+    }
+
+    static bool HandleArenaSeasonEndCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        uint8 season = sWorld->getIntConfig(CONFIG_ARENA_SEASON_ENTRY);
+        GameEventMgr::ActiveEvents const& activeEvents = sGameEventMgr->GetActiveEventList();
+        if (activeEvents.find(season) == activeEvents.end())
+        {
+            handler->PSendSysMessage(LANG_ARENA_ERROR_SEASON_ENDED, sWorld->getIntConfig(CONFIG_ARENA_SEASON_ID));
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        ArenaTeamMgr::ArenaTeamContainer::const_iterator i = sArenaTeamMgr->GetArenaTeamMapBegin();
+        for (; i != sArenaTeamMgr->GetArenaTeamMapEnd(); ++i)
+        {
+            ArenaTeam* team = i->second;
+            if (team->IsFighting())
+                team->FinishGame(0);
+        }
+        sGameEventMgr->StopEvent(season, true);
+        return true;
+    }
+
+    static bool HandleArenaSeasonStartCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        uint8 season = sWorld->getIntConfig(CONFIG_ARENA_SEASON_ENTRY);
+        GameEventMgr::ActiveEvents const& activeEvents = sGameEventMgr->GetActiveEventList();
+        if (activeEvents.find(season) != activeEvents.end())
+        {
+            handler->PSendSysMessage(LANG_ARENA_ERROR_SEASON_STARTED, sWorld->getIntConfig(CONFIG_ARENA_SEASON_ID));
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        sGameEventMgr->StartEvent(season, true);
+        return true;
+    }
+
+    static bool HandleArenaSeasonResetCommand(ChatHandler* handler, char const* args)
+    {
+        uint8 season = sWorld->getIntConfig(CONFIG_ARENA_SEASON_ENTRY);
+        // disable the arena season event so players can't queue during the reset
+        GameEventMgr::ActiveEvents const& activeEvents = sGameEventMgr->GetActiveEventList();
+        if (activeEvents.find(season) != activeEvents.end())
+        {
+            sGameEventMgr->StopEvent(season, true);
+        }
+
+        // stop all fights, disband all teams (optional) and reset MMR
+        ArenaTeamMgr::ArenaTeamContainer::const_iterator i = sArenaTeamMgr->GetArenaTeamMapBegin();
+        // is this iterating over all the brackets?
+        for (; i != sArenaTeamMgr->GetArenaTeamMapEnd(); ++i)
+        {
+            ArenaTeam* team = i->second;
+            ArenaTeam::MemberList::iterator member = team->m_membersBegin;
+            
+            if (team->IsFighting())
+                team->FinishGame(0);
+
+            if (!team->Empty())
+                // how can we handle the MMR of players without a team?
+                for (; member != team->m_membersEnd(); ++member)
+                {
+                    member->ModifyMatchmakerRating(0, 0);
+                    member->ModifyMatchmakerRating(0, 1);
+                    member->ModifyMatchmakerRating(0, 2);
+                }
+            
+            team->SaveToDB();
+
+            if (strncmp(args, "delteam", 8) == 0)
+            {
+                team->Disband();
+                delete(team);
+            }
+        }
+
+        // get all players and erase all arena points
+        SessionMap sessions = sWorld->GetAllSessions();
+        SessionMap::iterator itr;
+        for (itr = sessions.begin(); itr != sessions.end(); ++itr)
+        {
+            Player* player = itr->second->GetPlayer();
+            player->SetArenaPoints(0);
+            player->SaveToDB();
+        }
+
+        // restart the season
+        sGameEventMgr->StartEvent(season, true);
         return true;
     }
 };
